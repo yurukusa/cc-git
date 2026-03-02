@@ -1,0 +1,27 @@
+{
+  "name": "cc-git",
+  "version": "1.0.0",
+  "description": "What git commands does Claude Code run? Git subcommand analysis — 2,249 calls, git log beats git status.",
+  "type": "module",
+  "bin": {
+    "cc-git": "./cli.mjs"
+  },
+  "scripts": {
+    "start": "node cli.mjs"
+  },
+  "keywords": [
+    "claude-code",
+    "claude",
+    "ai",
+    "developer-tools",
+    "analytics",
+    "git",
+    "version-control",
+    "statistics"
+  ],
+  "author": "yurukusa",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

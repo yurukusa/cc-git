@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>cc-git — Git Command Analysis</title>
+  <style>
+    :root { --bg:#0d1117;--surface:#161b22;--border:#30363d;--text:#e6edf3;--muted:#8b949e;--cyan:#58d8f0;--yellow:#f7c948;--green:#56d364;--blue:#58a6ff;--purple:#bc8cff;--dim:#8b949e; }
+    *{box-sizing:border-box;margin:0;padding:0;}
+    body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;min-height:100vh;}
+    .container{max-width:820px;margin:0 auto;padding:40px 20px;}
+    h1{font-size:2rem;font-weight:800;color:var(--cyan);margin-bottom:8px;}
+    .subtitle{color:var(--muted);margin-bottom:32px;}
+    .hero{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:28px;margin-bottom:24px;}
+    .hero-main{font-size:1.5rem;font-weight:700;color:var(--green);margin-bottom:4px;}
+    .hero-sub{color:var(--muted);font-size:0.9rem;margin-bottom:20px;}
+    .stats-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;}
+    .stat{background:var(--bg);border-radius:10px;padding:16px;text-align:center;}
+    .stat-val{font-size:1.3rem;font-weight:700;color:var(--cyan);}
+    .stat-label{font-size:0.75rem;color:var(--muted);margin-top:2px;}
+    .section{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:24px;margin-bottom:20px;}
+    .section-title{font-size:1rem;font-weight:700;margin-bottom:16px;}
+    .bar-row{display:flex;align-items:center;gap:10px;margin-bottom:10px;font-size:0.85rem;}
+    .bar-label{width:160px;color:var(--muted);flex-shrink:0;font-family:monospace;font-size:0.82rem;}
+    .bar-track{flex:1;background:var(--bg);border-radius:4px;height:14px;overflow:hidden;}
+    .bar-fill{height:100%;border-radius:4px;transition:width 0.6s ease;}
+    .bar-count{width:75px;text-align:right;color:var(--muted);font-size:0.78rem;flex-shrink:0;}
+    .drop-zone{border:2px dashed var(--border);border-radius:14px;padding:48px;text-align:center;cursor:pointer;transition:border-color 0.2s;margin-bottom:24px;}
+    .drop-zone:hover,.drop-zone.drag-over{border-color:var(--cyan);}
+    .drop-zone h2{color:var(--cyan);margin-bottom:8px;}
+    .drop-zone p{color:var(--muted);font-size:0.9rem;}
+    .cmd-box{background:#0d1117;border:1px solid var(--border);border-radius:8px;padding:12px 16px;font-family:monospace;font-size:0.9rem;color:var(--cyan);margin-top:16px;}
+    .insight{background:rgba(88,166,255,0.04);border:1px solid rgba(88,166,255,0.2);border-radius:10px;padding:16px;color:var(--dim);font-size:0.9rem;line-height:1.7;}
+    .ratio-box{background:rgba(247,201,72,0.06);border:1px solid rgba(247,201,72,0.2);border-radius:10px;padding:16px;margin-bottom:20px;text-align:center;}
+    .ratio-val{font-size:2.5rem;font-weight:800;color:var(--yellow);}
+    .ratio-label{color:var(--muted);font-size:0.85rem;margin-top:4px;}
+    .hidden{display:none;}
+    @media(max-width:600px){.stats-grid{grid-template-columns:1fr 1fr;}}
+  </style>
+</head>
+<body>
+<div class="container">
+  <h1>cc-git</h1>
+  <p class="subtitle">What git commands does Claude Code run? Drop your <code>~/.claude/projects/</code> folder to find out.</p>
+
+  <div class="drop-zone" id="dropZone">
+    <h2>Drop your ~/.claude/projects/ folder here</h2>
+    <p>Scans session transcripts for git Bash commands — runs entirely in your browser</p>
+    <div class="cmd-box">npx cc-git</div>
+  </div>
+
+  <div id="results" class="hidden">
+    <div class="hero">
+      <div class="hero-main" id="heroMain"></div>
+      <div class="hero-sub" id="heroSub"></div>
+      <div class="stats-grid" id="statsGrid"></div>
+    </div>
+
+    <div class="ratio-box" id="ratioBox"></div>
+
+    <div class="section">
+      <div class="section-title">Git subcommands</div>
+      <div id="subcmdChart"></div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Insights</div>
+      <div class="insight" id="insightBox"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const dropZone = document.getElementById('dropZone');
+const resultsEl = document.getElementById('results');
+
+dropZone.addEventListener('dragover', e=>{e.preventDefault();dropZone.classList.add('drag-over');});
+dropZone.addEventListener('dragleave', ()=>dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop', async e=>{
+  e.preventDefault();
+  dropZone.classList.remove('drag-over');
+  const items = [...e.dataTransfer.items];
+  const files = [];
+  async function traverse(entry){
+    if(entry.isFile){
+      if(entry.name.endsWith('.jsonl')) await new Promise(r=>entry.file(f=>{files.push(f);r();}));
+    } else if(entry.isDirectory){
+      const reader = entry.createReader();
+      await new Promise(r=>{
+        reader.readEntries(async entries=>{
+          for(const en of entries) await traverse(en);
+          r();
+        });
+      });
+    }
+  }
+  for(const item of items){
+    const entry = item.webkitGetAsEntry();
+    if(entry) await traverse(entry);
+  }
+  if(files.length===0){dropZone.querySelector('p').textContent='No .jsonl files found — try dropping the ~/.claude/projects/ folder';return;}
+  analyze(files);
+});
+
+async function analyze(files){
+  let total=0,adds=0,commits=0,pushes=0,sessionsWithGit=0;
+  const subcmds={};
+
+  for(const file of files){
+    const text = await file.text();
+    const lines = text.split('\n');
+    let sessionGit=false;
+    for(const line of lines){
+      if(!line||!line.includes('"Bash"')) continue;
+      let data;
+      try{data=JSON.parse(line);}catch{continue;}
+      const content=data?.message?.content;
+      if(!Array.isArray(content)) continue;
+      for(const block of content){
+        if(block?.type!=='tool_use'||block.name!=='Bash') continue;
+        const cmd=(block.input?.command||'').trim();
+        if(!cmd.startsWith('git ') && cmd.toLowerCase()!=='git') continue;
+        const parts=cmd.split(/\s+/);
+        if(parts[0].toLowerCase()!=='git') continue;
+        const sub=(parts[1]||'').toLowerCase();
+        if(!sub) continue;
+        total++;
+        sessionGit=true;
+        subcmds[sub]=(subcmds[sub]||0)+1;
+        if(sub==='add') adds++;
+        else if(sub==='commit') commits++;
+        else if(sub==='push') pushes++;
+      }
+    }
+    if(sessionGit) sessionsWithGit++;
+  }
+
+  const topSubcmds=Object.entries(subcmds).sort((a,b)=>b[1]-a[1]).slice(0,12);
+  const ratio=commits>0?(pushes/commits):0;
+  render({total,adds,commits,pushes,sessionsWithGit,topSubcmds,ratio});
+}
+
+const SUB_COLORS={add:'var(--green)',log:'var(--yellow)',diff:'var(--yellow)',status:'var(--green)',push:'var(--blue)',commit:'var(--cyan)',checkout:'var(--purple)',branch:'var(--cyan)',remote:'var(--dim)',init:'var(--green)',show:'var(--dim)',stash:'var(--yellow)','-c':'var(--dim)'};
+
+function bar(pct,color){
+  const w=Math.max(1,Math.round(pct*100));
+  return `<div class="bar-track"><div class="bar-fill" style="width:${w}%;background:${color}"></div></div>`;
+}
+
+function render(d){
+  dropZone.classList.add('hidden');
+  resultsEl.classList.remove('hidden');
+
+  document.getElementById('heroMain').textContent=`${d.total.toLocaleString()} git commands run`;
+  document.getElementById('heroSub').textContent=`Across ${d.sessionsWithGit.toLocaleString()} sessions`;
+
+  document.getElementById('statsGrid').innerHTML=[
+    ['Total',d.total.toLocaleString(),'var(--cyan)'],
+    ['git add',d.adds.toLocaleString(),'var(--green)'],
+    ['git commit',d.commits.toLocaleString(),'var(--yellow)'],
+  ].map(([label,val,color])=>`<div class="stat"><div class="stat-val" style="color:${color}">${val}</div><div class="stat-label">${label}</div></div>`).join('');
+
+  const ratioColor=d.ratio>1?'var(--yellow)':'var(--green)';
+  document.getElementById('ratioBox').innerHTML=`
+    <div class="ratio-val" style="color:${ratioColor}">${d.ratio.toFixed(1)}x</div>
+    <div class="ratio-label">push/commit ratio — ${d.pushes.toLocaleString()} pushes vs ${d.commits.toLocaleString()} commits</div>
+  `;
+
+  const maxSub=d.topSubcmds[0]?.[1]||1;
+  document.getElementById('subcmdChart').innerHTML=d.topSubcmds.map(([cmd,count])=>{
+    const pct=d.total>0?(count/d.total*100).toFixed(1):0;
+    const color=SUB_COLORS[cmd]||'var(--dim)';
+    const label=cmd==='-c'?'-c (path-scoped)':`git ${cmd}`;
+    return `<div class="bar-row"><div class="bar-label" style="color:${color}">${label}</div>${bar(count/maxSub,color)}<div class="bar-count">${pct}% (${count.toLocaleString()})</div></div>`;
+  }).join('');
+
+  const logCount=d.topSubcmds.find(([c])=>c==='log')?.[1]||0;
+  const statusCount=d.topSubcmds.find(([c])=>c==='status')?.[1]||0;
+  const addPct=d.total>0?(d.adds/d.total*100).toFixed(1):0;
+  document.getElementById('insightBox').innerHTML=`
+    ${d.total.toLocaleString()} git commands across ${d.sessionsWithGit.toLocaleString()} sessions.
+    <strong>git add</strong> is ${addPct}% of all git commands — staging is the most common git action.
+    ${logCount>statusCount?`<br><strong>git log</strong> (${logCount.toLocaleString()}) beats <strong>git status</strong> (${statusCount.toLocaleString()}) — Claude reads history before acting.`:''}
+    ${d.ratio>1?`<br>${d.ratio.toFixed(1)}× more pushes than commits — retries and force-pushes inflate the count.`:''}
+  `;
+}
+</script>
+</body>
+</html>
