@@ -1,91 +1,51 @@
 # cc-git
 
-**What git commands does Claude Code run?** 2,249 git calls. `git log` (323) beats `git status` (162) — Claude reads history before acting. `git add` is 27.7% of all git commands.
-
-Git subcommand analysis across all your sessions.
+How does Claude Code use git?
 
 ```
 npx cc-git
 ```
 
-No install. No dependencies.
-
----
-
-## What it shows
-
-- **Total git commands** — across all sessions
-- **Subcommand breakdown** — add, log, diff, status, push, commit, and more
-- **Push/commit ratio** — how many pushes per commit
-- **Sessions with git** — how many sessions used version control
-- **Insights** — surprising patterns in how Claude Code uses git
+Analyzes `~/.claude/projects/` JSONL transcripts to track git subcommand usage, workflow patterns, and commit behavior.
 
 ## Output
 
 ```
-  cc-git — Git Command Analysis
-  ════════════════════════════════════════
+cc-git — Git Usage in Claude Code
+====================================================
+Sessions: 1,511 | Git sessions: 291 (19.3%) | Git calls: 3,846
 
-  ▸ Overview
-    Total git commands: 2,249
-    Sessions with git:  187
-    git add:            624
-    git commit:         82
-    git push:           161
-    Push/commit ratio:  2.0x (more pushes than commits)
+Git subcommands:
+  git add              ████████████████████   29.0%  (1,114)
+  git log              ███████████░░░░░░░░░   15.8%  (606)
+  git diff             ███████░░░░░░░░░░░░░   10.1%  (388)
+  git status           ██████░░░░░░░░░░░░░░    8.7%  (335)
+  git push             █████░░░░░░░░░░░░░░░    7.2%  (278)
+  git commit           ██░░░░░░░░░░░░░░░░░░    3.2%  (124)
 
-  ▸ Most used subcommands
-    git add              ████████████████  27.7%  (624)
-    git log              ████████░░░░░░░░  14.4%  (323)
-    git diff             ███████░░░░░░░░░  11.9%  (268)
-    git status           ████░░░░░░░░░░░░   7.2%  (162)
-    git push             ████░░░░░░░░░░░░   7.2%  (161)
-    -C (path-scoped)     ████░░░░░░░░░░░░   7.1%  (159)
-    git show             ███░░░░░░░░░░░░░   4.8%  (109)
-    git checkout         ███░░░░░░░░░░░░░   4.8%  (109)
-    git commit           ██░░░░░░░░░░░░░░   3.6%  (82)
-
-  ▸ Insights
-    git log (323) beats git status (162) — Claude reads history before acting.
-    2.0x more pushes than commits — retries and force-pushes inflate the count.
-    git add is 27.7% of all git commands — staging is the most common git action.
+Key ratios:
+  git add : git commit  = 9.0:1  (1,114 adds, 124 commits)
+  git push : git commit = 2.2:1  (278 pushes, 124 commits)
 ```
+
+## Key Findings
+
+- **19% of sessions use git** — most Claude Code work happens without explicit git commands
+- **git add is 9x more common than git commit** — Claude stages files far more than it commits
+- **git log + git diff = 26%** — a quarter of git usage is reading history, not writing it
+- **160 git init** — Claude creates new repos frequently
 
 ## Options
 
 ```
 npx cc-git          # terminal output
-npx cc-git --json   # JSON output for scripting
+npx cc-git --json   # JSON output
 ```
 
-### JSON output
+## Browser Version
 
-```json
-{
-  "version": "1.0.0",
-  "totalGitCalls": 2249,
-  "sessionsWithGit": 187,
-  "addCount": 624,
-  "commitCount": 82,
-  "pushCount": 161,
-  "pushToCommitRatio": 1.96,
-  "topSubcommands": [
-    { "cmd": "add", "count": 624 },
-    { "cmd": "log", "count": 323 }
-  ]
-}
-```
+Open [cc-git](https://yurukusa.github.io/cc-git/) and drop your `~/.claude/projects/` folder.
 
-## Browser version
+## Part of cc-toolkit
 
-Try it without installing: **[yurukusa.github.io/cc-git](https://yurukusa.github.io/cc-git/)**
-
-Drag-drop your `~/.claude/projects/` folder (or any subfolder) to analyze.
-
-## How it works
-
-Reads `~/.claude/projects/**/*.jsonl` session transcripts and extracts every `Bash` tool call that starts with `git`. Parses the git subcommand (second token) and aggregates counts. Handles `git -C <path>` path-scoped commands as a separate category. Zero external dependencies.
-
----
-
-Part of [cc-toolkit](https://yurukusa.github.io/cc-toolkit/) — 75 tools for understanding your Claude Code sessions.
+[107 free tools for Claude Code](https://yurukusa.github.io/cc-toolkit/)

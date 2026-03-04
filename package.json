@@ -1,7 +1,7 @@
 {
   "name": "cc-git",
   "version": "1.0.0",
-  "description": "What git commands does Claude Code run? Git subcommand analysis — 2,249 calls, git log beats git status.",
+  "description": "How does Claude Code use git? 19% of sessions use git. git add is 9x more common than git commit. Track subcommands, workflows, and commit patterns.",
   "type": "module",
   "bin": {
     "cc-git": "./cli.mjs"
@@ -10,18 +10,17 @@
     "start": "node cli.mjs"
   },
   "keywords": [
-    "claude-code",
-    "claude",
-    "ai",
-    "developer-tools",
-    "analytics",
-    "git",
-    "version-control",
-    "statistics"
+    "claude", "claude-code", "anthropic", "cli", "productivity",
+    "ai", "developer-tools", "session-analysis", "git", "version-control"
   ],
   "author": "yurukusa",
   "license": "MIT",
   "engines": {
-    "node": ">=18.0.0"
-  }
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yurukusa/cc-git"
+  },
+  "homepage": "https://yurukusa.github.io/cc-git/"
 }

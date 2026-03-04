@@ -1,212 +1,222 @@
 #!/usr/bin/env node
+// cc-git — How does Claude Code use git?
+// Tracks git subcommand usage, workflow patterns, and commit behavior.
 
-// cc-git — What git commands does Claude Code run? Git subcommand analysis.
-// Zero dependencies. Reads ~/.claude/projects/ session transcripts.
+import { readFileSync, readdirSync, statSync } from 'fs';
+import { join, resolve } from 'path';
+import { cpus } from 'os';
 
-import { readdir, stat } from 'node:fs/promises';
-import { join } from 'node:path';
-import { homedir } from 'node:os';
-import { createInterface } from 'node:readline';
-import { createReadStream } from 'node:fs';
+const CONCURRENCY = Math.min(cpus().length, 8);
+const MIN_BASH = 1;
 
-const CONCURRENCY = 8;
+function analyzeFile(text) {
+  const gitCmds = {};
+  let totalBash = 0;
+  let gitBash = 0;
+  let hasGit = false;
+  let adds = 0, commits = 0, pushes = 0, inits = 0;
 
-const C = {
-  reset: '\x1b[0m', bold: '\x1b[1m', dim: '\x1b[2m',
-  green: '\x1b[32m', yellow: '\x1b[33m', cyan: '\x1b[36m',
-  blue: '\x1b[34m', purple: '\x1b[35m',
-};
+  // Track workflow sequences: add→commit→push
+  const gitSeq = []; // ordered git subcommands
 
-function bar(pct, width = 20, color = C.cyan) {
-  const filled = Math.round(pct * width);
-  return color + '█'.repeat(filled) + C.dim + '░'.repeat(width - filled) + C.reset;
-}
-
-function getSubcmd(cmd) {
-  const parts = cmd.trim().split(/\s+/);
-  if (parts[0].toLowerCase() !== 'git') return null;
-  const sub = parts[1] || '';
-  // git -C <path> <subcmd> → label as "-C (path-scoped)"
-  if (sub === '-C') return '-C';
-  return sub.toLowerCase();
-}
-
-async function analyzeFile(filePath) {
-  let total = 0;
-  let adds = 0, commits = 0, pushes = 0;
-  const subcmds = {};
-  let sessionHasGit = false;
-
-  const rl = createInterface({
-    input: createReadStream(filePath),
-    crlfDelay: Infinity,
-  });
-
-  for await (const line of rl) {
-    if (!line || !line.includes('"Bash"')) continue;
-
-    let data;
-    try { data = JSON.parse(line); } catch { continue; }
-
-    const content = data?.message?.content;
+  for (const line of text.split('\n')) {
+    if (!line) continue;
+    let obj;
+    try { obj = JSON.parse(line); } catch { continue; }
+    const content = (obj.message || obj).content;
     if (!Array.isArray(content)) continue;
 
-    for (const block of content) {
-      if (block?.type !== 'tool_use' || block.name !== 'Bash') continue;
-      const cmd = (block.input?.command || '').trim();
-      if (!cmd.startsWith('git ') && cmd.toLowerCase() !== 'git') continue;
+    for (const b of content) {
+      if (b.type === 'tool_use' && b.name === 'Bash' && b.input && b.input.command) {
+        totalBash++;
+        const cmd = b.input.command;
+        const m = cmd.match(/\bgit\s+(\w+)/);
+        if (m) {
+          gitBash++;
+          hasGit = true;
+          const sub = m[1];
+          gitCmds[sub] = (gitCmds[sub] || 0) + 1;
+          gitSeq.push(sub);
 
-      const sub = getSubcmd(cmd);
-      if (!sub) continue;
-
-      total++;
-      sessionHasGit = true;
-      subcmds[sub] = (subcmds[sub] || 0) + 1;
-      if (sub === 'add') adds++;
-      else if (sub === 'commit') commits++;
-      else if (sub === 'push') pushes++;
+          if (sub === 'add') adds++;
+          else if (sub === 'commit') commits++;
+          else if (sub === 'push') pushes++;
+          else if (sub === 'init') inits++;
+        }
+      }
     }
   }
 
-  return { total, adds, commits, pushes, subcmds, sessionHasGit };
+  // Detect workflow patterns in sequence
+  let addCommitPush = 0;
+  let addCommit = 0;
+  let commitPush = 0;
+  for (let i = 0; i < gitSeq.length - 1; i++) {
+    if (gitSeq[i] === 'add' && gitSeq[i+1] === 'commit') {
+      addCommit++;
+      if (i + 2 < gitSeq.length && gitSeq[i+2] === 'push') {
+        addCommitPush++;
+      }
+    }
+    if (gitSeq[i] === 'commit' && gitSeq[i+1] === 'push') {
+      commitPush++;
+    }
+  }
+
+  return {
+    totalBash, gitBash, hasGit, gitCmds, gitSeq,
+    adds, commits, pushes, inits,
+    addCommit, addCommitPush, commitPush,
+    hasData: totalBash >= MIN_BASH,
+  };
 }
 
-async function scan() {
-  const projectsDir = join(homedir(), '.claude', 'projects');
-  let projectDirs;
-  try { projectDirs = await readdir(projectsDir); } catch { return null; }
+function mergeResults(results) {
+  const merged = {
+    sessions: 0,
+    gitSessions: 0,
+    totalBash: 0,
+    totalGit: 0,
+    gitCmds: {},
+    adds: 0, commits: 0, pushes: 0, inits: 0,
+    addCommit: 0, addCommitPush: 0, commitPush: 0,
+    gitPerSession: [],  // git calls per git-session
+  };
 
-  const tasks = [];
-  for (const pd of projectDirs) {
-    const pp = join(projectsDir, pd);
-    const ps = await stat(pp).catch(() => null);
-    if (!ps?.isDirectory()) continue;
-    const files = await readdir(pp).catch(() => []);
-    for (const f of files) {
-      if (f.endsWith('.jsonl')) tasks.push(join(pp, f));
+  for (const r of results) {
+    if (!r.hasData) continue;
+    merged.sessions++;
+    merged.totalBash += r.totalBash;
+    merged.totalGit += r.gitBash;
+    if (r.hasGit) {
+      merged.gitSessions++;
+      merged.gitPerSession.push(r.gitBash);
     }
-    for (const f of files) {
-      const sp = join(pp, f, 'subagents');
-      const ss = await stat(sp).catch(() => null);
-      if (!ss?.isDirectory()) continue;
-      const sfs = await readdir(sp).catch(() => []);
-      for (const sf of sfs) {
-        if (sf.endsWith('.jsonl')) tasks.push(join(sp, sf));
-      }
-    }
-  }
-
-  let totalCmds = 0, totalAdds = 0, totalCommits = 0, totalPushes = 0;
-  let sessionsWithGit = 0;
-  const allSubcmds = {};
-
-  for (let i = 0; i < tasks.length; i += CONCURRENCY) {
-    const batch = tasks.slice(i, i + CONCURRENCY);
-    const results = await Promise.all(batch.map(async p => {
-      const st = await stat(p).catch(() => null);
-      if (!st || st.size < 100) return null;
-      return analyzeFile(p).catch(() => null);
-    }));
-
-    for (const r of results) {
-      if (!r || r.total === 0) continue;
-      totalCmds += r.total;
-      totalAdds += r.adds;
-      totalCommits += r.commits;
-      totalPushes += r.pushes;
-      if (r.sessionHasGit) sessionsWithGit++;
-      for (const [k, v] of Object.entries(r.subcmds)) {
-        allSubcmds[k] = (allSubcmds[k] || 0) + v;
-      }
+    merged.adds += r.adds;
+    merged.commits += r.commits;
+    merged.pushes += r.pushes;
+    merged.inits += r.inits;
+    merged.addCommit += r.addCommit;
+    merged.addCommitPush += r.addCommitPush;
+    merged.commitPush += r.commitPush;
+    for (const [k, v] of Object.entries(r.gitCmds)) {
+      merged.gitCmds[k] = (merged.gitCmds[k] || 0) + v;
     }
   }
 
-  const topSubcmds = Object.entries(allSubcmds)
+  merged.gitPerSession.sort((a, b) => a - b);
+  return merged;
+}
+
+function findJsonlFiles(dir) {
+  const files = [];
+  try {
+    for (const name of readdirSync(dir)) {
+      const p = join(dir, name);
+      try {
+        const st = statSync(p);
+        if (st.isDirectory()) files.push(...findJsonlFiles(p));
+        else if (name.endsWith('.jsonl')) files.push(p);
+      } catch {}
+    }
+  } catch {}
+  return files;
+}
+
+async function processFiles(files) {
+  const results = [];
+  let idx = 0;
+  async function worker() {
+    while (idx < files.length) {
+      const f = files[idx++];
+      try { results.push(analyzeFile(readFileSync(f, 'utf8'))); } catch {}
+    }
+  }
+  await Promise.all(Array.from({ length: CONCURRENCY }, worker));
+  return results;
+}
+
+function bar(n, max, width = 20) {
+  const f = max > 0 ? Math.round((n / max) * width) : 0;
+  return '█'.repeat(f) + '░'.repeat(width - f);
+}
+
+function pct(n, d) {
+  return d > 0 ? (n / d * 100).toFixed(1) : '0.0';
+}
+
+function median(arr) {
+  if (arr.length === 0) return 0;
+  return arr[Math.floor(arr.length / 2)];
+}
+
+function renderOutput(m, isJson) {
+  const sorted = Object.entries(m.gitCmds)
     .sort((a, b) => b[1] - a[1])
-    .slice(0, 12)
-    .map(([cmd, count]) => ({ cmd, count }));
+    .slice(0, 12);
+  const maxCmd = sorted.length > 0 ? sorted[0][1] : 1;
 
-  const pushToCommitRatio = totalCommits > 0 ? totalPushes / totalCommits : 0;
+  const addCommitRatio = m.commits > 0 ? (m.adds / m.commits).toFixed(1) : '∞';
+  const medGit = median(m.gitPerSession);
+  const p90Git = m.gitPerSession.length > 0 ? m.gitPerSession[Math.floor(m.gitPerSession.length * 0.9)] : 0;
 
-  return { totalCmds, totalAdds, totalCommits, totalPushes, sessionsWithGit, topSubcmds, pushToCommitRatio };
+  if (isJson) {
+    console.log(JSON.stringify({
+      sessions: m.sessions,
+      gitSessions: m.gitSessions,
+      gitSessionRate: +(pct(m.gitSessions, m.sessions)),
+      totalGitCalls: m.totalGit,
+      gitPctOfBash: +(pct(m.totalGit, m.totalBash)),
+      addCommitRatio: +addCommitRatio,
+      medianGitPerSession: medGit,
+      commands: sorted.map(([cmd, count]) => ({
+        command: cmd, count, pct: +(pct(count, m.totalGit)),
+      })),
+      workflows: {
+        addCommit: m.addCommit,
+        addCommitPush: m.addCommitPush,
+        commitPush: m.commitPush,
+      },
+      counts: { adds: m.adds, commits: m.commits, pushes: m.pushes, inits: m.inits },
+    }, null, 2));
+    return;
+  }
+
+  console.log('\ncc-git — Git Usage in Claude Code');
+  console.log('='.repeat(52));
+  console.log(`Sessions: ${m.sessions.toLocaleString()} | Git sessions: ${m.gitSessions.toLocaleString()} (${pct(m.gitSessions, m.sessions)}%) | Git calls: ${m.totalGit.toLocaleString()}`);
+
+  console.log('\nGit subcommands:');
+  for (const [cmd, count] of sorted) {
+    console.log(`  git ${cmd.padEnd(16)} ${bar(count, maxCmd)}  ${pct(count, m.totalGit).padStart(5)}%  (${count.toLocaleString()})`);
+  }
+
+  console.log('\nKey ratios:');
+  console.log(`  git add : git commit  = ${addCommitRatio}:1  (${m.adds.toLocaleString()} adds, ${m.commits.toLocaleString()} commits)`);
+  console.log(`  git push : git commit = ${m.commits > 0 ? (m.pushes / m.commits).toFixed(1) : '∞'}:1  (${m.pushes.toLocaleString()} pushes, ${m.commits.toLocaleString()} commits)`);
+  console.log(`  git init count        = ${m.inits.toLocaleString()} new repos created`);
+
+  console.log('\nWorkflow chains:');
+  console.log(`  add→commit        ${m.addCommit} occurrences`);
+  console.log(`  add→commit→push   ${m.addCommitPush} occurrences (${pct(m.addCommitPush, m.addCommit)}% of add→commit)`);
+  console.log(`  commit→push       ${m.commitPush} occurrences`);
+
+  console.log(`\nGit calls per session (git sessions only): median ${medGit} | p90 ${p90Git}`);
+  console.log(`Git as % of Bash: ${pct(m.totalGit, m.totalBash)}% (${m.totalGit.toLocaleString()} / ${m.totalBash.toLocaleString()})`);
+  console.log('');
 }
 
-const jsonMode = process.argv.includes('--json');
+const args = process.argv.slice(2);
+const isJson = args.includes('--json');
 
-if (!jsonMode) process.stdout.write(`  ${C.dim}Scanning git commands...${C.reset}\r`);
+const dataDir = resolve(process.env.HOME || '~', '.claude', 'projects');
+const files = findJsonlFiles(dataDir);
 
-const data = await scan();
-if (!data) {
-  console.error('Could not read ~/.claude/projects/');
+if (files.length === 0) {
+  console.error('No .jsonl files found in ~/.claude/projects/');
   process.exit(1);
 }
 
-const { totalCmds, totalAdds, totalCommits, totalPushes, sessionsWithGit, topSubcmds, pushToCommitRatio } = data;
-
-if (jsonMode) {
-  console.log(JSON.stringify({
-    version: '1.0.0',
-    totalGitCalls: totalCmds,
-    sessionsWithGit,
-    addCount: totalAdds,
-    commitCount: totalCommits,
-    pushCount: totalPushes,
-    pushToCommitRatio: +pushToCommitRatio.toFixed(2),
-    topSubcommands: topSubcmds,
-  }, null, 2));
-  process.exit(0);
-}
-
-// ── Display ──────────────────────────────────────────────────────
-
-console.log(`\n  ${C.bold}${C.cyan}cc-git — Git Command Analysis${C.reset}`);
-console.log(`  ${'═'.repeat(40)}`);
-
-console.log(`\n  ${C.bold}▸ Overview${C.reset}`);
-console.log(`    Total git commands: ${C.bold}${totalCmds.toLocaleString()}${C.reset}`);
-console.log(`    Sessions with git:  ${C.dim}${sessionsWithGit.toLocaleString()}${C.reset}`);
-console.log(`    git add:            ${C.dim}${totalAdds.toLocaleString()}${C.reset}`);
-console.log(`    git commit:         ${C.dim}${totalCommits.toLocaleString()}${C.reset}`);
-console.log(`    git push:           ${C.dim}${totalPushes.toLocaleString()}${C.reset}`);
-
-// Push/commit ratio insight
-if (totalCommits > 0) {
-  const ratioColor = pushToCommitRatio > 1 ? C.yellow : C.green;
-  console.log(`    Push/commit ratio:  ${ratioColor}${pushToCommitRatio.toFixed(1)}x${C.reset} ${C.dim}(${pushToCommitRatio > 1 ? 'more pushes than commits' : 'more commits than pushes'})${C.reset}`);
-}
-
-// Subcommand breakdown
-console.log(`\n  ${C.bold}▸ Most used subcommands${C.reset}`);
-const maxSub = topSubcmds[0]?.count || 1;
-const subColors = {
-  add: C.green, commit: C.cyan, push: C.blue, pull: C.purple,
-  log: C.yellow, diff: C.yellow, status: C.green, checkout: C.purple,
-  branch: C.cyan, remote: C.dim, init: C.green, stash: C.yellow,
-  show: C.dim, tag: C.dim, '-C': C.dim,
-};
-for (const { cmd, count } of topSubcmds) {
-  const pct = totalCmds > 0 ? count / totalCmds * 100 : 0;
-  const color = subColors[cmd] || C.dim;
-  const label = cmd === '-C' ? '-C (path-scoped)' : `git ${cmd}`;
-  const b = bar(count / maxSub, 16, color);
-  console.log(`    ${color}${label.padEnd(20)}${C.reset}  ${b}  ${C.dim}${pct.toFixed(1)}%  (${count.toLocaleString()})${C.reset}`);
-}
-
-// Insights
-console.log(`\n  ${C.bold}▸ Insights${C.reset}`);
-console.log(`    ${C.dim}${totalCmds.toLocaleString()} git commands across ${sessionsWithGit.toLocaleString()} sessions.${C.reset}`);
-const logCount = topSubcmds.find(s => s.cmd === 'log')?.count || 0;
-const statusCount = topSubcmds.find(s => s.cmd === 'status')?.count || 0;
-if (logCount > statusCount) {
-  console.log(`    ${C.yellow}git log (${logCount.toLocaleString()}) beats git status (${statusCount.toLocaleString()}) — Claude reads history before acting.${C.reset}`);
-}
-if (pushToCommitRatio > 1) {
-  console.log(`    ${C.dim}${pushToCommitRatio.toFixed(1)}x more pushes than commits — retries and force-pushes inflate the count.${C.reset}`);
-}
-const addPct = totalCmds > 0 ? (totalAdds / totalCmds * 100).toFixed(1) : 0;
-console.log(`    ${C.green}git add is ${addPct}% of all git commands — staging is the most common git action.${C.reset}`);
-
-console.log();
-console.log(`  ${C.dim}─── Share ───${C.reset}`);
-console.log(`  ${C.dim}${totalCmds.toLocaleString()} git commands run. git add is #1. git log beats git status. #ClaudeCode${C.reset}`);
-console.log();
+const rawResults = await processFiles(files);
+const merged = mergeResults(rawResults);
+renderOutput(merged, isJson);
